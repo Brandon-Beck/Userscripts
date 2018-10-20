@@ -1,5 +1,6 @@
 /* global throwMissingParam getUserValue setUserValue */
 /* eslint no-unused-vars: ["off"] */
+/* eslint no-return-assign: ["off"] */
 
 'use strict'
 
@@ -9,10 +10,10 @@
     @type {Object}
     @property {Object} obj -
     @property {Object} obj.value - Getter/Setter for value of all children.
-    @property {Object} obj.all_savable - Getter/Setter for value of all children.
+    @property {Object} obj.allSavable - Getter/Setter for value of all children.
     Like obj.value, but builds a new JSON stringifyable object based on the
     current value. Used for saving/loading to/from JSON.
-    @property {Object} obj.own_savable - Like obj.all_savable, but doesn't
+    @property {Object} obj.ownSavable - Like obj.allSavable, but doesn't
     descend on children with diffrent save methods.
     */
 
@@ -67,7 +68,7 @@ function SettingsTree({
     // For the time being, we are safe as long as we only use one save location,
     // or there are no parent save locations, or we dont change save locations.
     if (typeof saveLocation === 'string' && saveLocation.length > 0) {
-      return getUserValue(saveLocation ,stree.own_savable).then((obj) => {
+      return getUserValue(saveLocation ,stree.ownSavable).then((obj) => {
         stree.value = obj
         return stree.value
       })
@@ -80,7 +81,7 @@ function SettingsTree({
   }
   function defaultSaveMethod() {
     if (typeof saveLocation === 'string' && saveLocation.length > 0) {
-      return setUserValue(saveLocation ,stree.own_savable)
+      return setUserValue(saveLocation ,stree.ownSavable)
     }
     throw Error(`Attempted to save SettingsTree<${key}>, but no saveLocation was set!`)
   }
@@ -107,14 +108,14 @@ function SettingsTree({
     }
   })
   const ourMethods = {}
-  function getOrDefer(undeferedObject ,deferKey ,defaultValue) {
+  function getOrDefer(undeferedObject ,deferKey ,fallback) {
     if (undeferedObject[deferKey] != null) {
       return undeferedObject[deferKey]
     }
     if (typeof defer === 'object') {
       return defer[deferKey]
     }
-    return defaultValue
+    return fallback
   }
   function getStorageMethod(storageMethodKey ,defaultMethod) {
     // first try using a defined save method.
@@ -195,7 +196,7 @@ function SettingsTree({
     }
   })
   // FIXME: Ugly patch to permit detecting same save method.
-  stree.is_same_method = (parentMethod ,key) => parentMethod === ourMethods[key]
+  stree.isSameMethod = (parentMethod ,checkKey) => parentMethod === ourMethods[checkKey]
 
   function autosaveMethod() {
     if (ourMethods.autosave) {
@@ -208,13 +209,13 @@ function SettingsTree({
     }
   }
   // FIXME: Dont expose. instead, we should present this data the same way we present UI's accessors.
-  stree._getMethodTree = (method_name) => {
+  stree.getMethodTree = (methodName) => {
     const methods = new Set([])
-    if (typeof ourMethods[method_name] === 'function') {
-      methods.add(ourMethods[method_name])
+    if (typeof ourMethods[methodName] === 'function') {
+      methods.add(ourMethods[methodName])
     }
-    for (const [key ,child] of Object.entries(privateObject.children)) {
-      child._getMethodTree().forEach((decendentMethod) => {
+    for (const [childKey ,child] of Object.entries(privateObject.children)) {
+      child.getMethodTree().forEach((decendentMethod) => {
         methods.add(decendentMethod)
       })
     }
@@ -224,21 +225,23 @@ function SettingsTree({
     if (typeof ourMethods.saveMethod === 'function') {
       return ourMethods.saveMethod()
     }
+    return undefined
   }
   stree.load = () => {
     if (typeof ourMethods.loadMethod === 'function') {
       return ourMethods.loadMethod()
     }
+    return undefined
   }
-  stree.save_all = () => {
-    const methods = stree._getMethodTree('saveMethod')
+  stree.saveAll = () => {
+    const methods = stree.getMethodTree('saveMethod')
     // dbg(`Found a total of ${save_methods.size} save methods`);
     methods.forEach((decendentMethod) => {
       decendentMethod()
     })
   }
-  stree.load_all = () => {
-    const methods = stree._getMethodTree('loadMethod')
+  stree.loadAll = () => {
+    const methods = stree.getMethodTree('loadMethod')
     // dbg(`Found a total of ${save_methods.size} save methods`);
     methods.forEach((decendentMethod) => {
       decendentMethod()
@@ -313,21 +316,21 @@ function SettingsTree({
       ,enumerable: true
     }
     // all savables, even ones that save in a diffrent location
-    ,all_savable: {
+    ,allSavable: {
       get() {
         if (isLeaf) {
           return privateMethods.value
         }
         const obj = {}
-        for (const [key ,child] of Object.entries(privateObject.children)) {
-          obj[key] = child.all_savable
+        for (const [childKey ,child] of Object.entries(privateObject.children)) {
+          obj[childKey] = child.allSavable
         }
         return obj
       }
       // TODO Throw error on attempt to set to savable
     }
     // a savable with only keys set to be stored in the same saveLocation
-    ,own_savable: {
+    ,ownSavable: {
       get() {
         if (isLeaf) {
           return privateMethods.value
@@ -335,24 +338,24 @@ function SettingsTree({
         const obj = {}
         for (const [childKey ,child] of Object.entries(privateObject.children)) {
           // FIXME ugly patch to detect same save methods
-          if (child.is_same_method(ourMethods.saveMethod ,'saveMethod')) {
-            obj[childKey] = child.own_savable
+          if (child.isSameMethod(ourMethods.saveMethod ,'saveMethod')) {
+            obj[childKey] = child.ownSavable
           }
         }
         return obj
       }
       // TODO Throw error on attempt to set to savable
     }
-    // NOTE quick access method for all_savable.
+    // NOTE quick access method for allSavable.
     // can't justify adding it.
     // Too ambiguous.
     /* savable: {
-          get() { return stree.all_savable; },
+          get() { return stree.allSavable; },
         }, */
   })
   // Similar to this.value, but for the UI.
   // Not added to settings tree, passed directly to ui for privacy.
-  const uiAccessor = { children_accessors: {} }
+  const uiAccessor = { childrenAccessors: {} }
   Object.defineProperties(uiAccessor ,{
     value: {
       get() {
@@ -360,11 +363,11 @@ function SettingsTree({
           return privateMethods.value
         }
 
-        return uiAccessor.children_accessors
+        return uiAccessor.childrenAccessors
       }
       ,set(val) {
         setValueCommon({
-          accessors: uiAccessor.children_accessors
+          accessors: uiAccessor.childrenAccessors
           ,obj: val
           ,otherCallback: onchange
           ,myCallback: updateUiCallback
