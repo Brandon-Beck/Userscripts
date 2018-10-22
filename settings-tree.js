@@ -1,8 +1,31 @@
+// ==UserScript==
+// @name     Settings Tree
+// @version  0.0.1
+// @description Should be required by other userscripts.
+// @grant    unsafeWindow
+// @grant    GM.getValue
+// @grant    GM.setValue
+// @grant    GM_getValue
+// @grant    GM_setValue
+// @grant    GM_listValues
+// @grant    GM_listValues
+// @match    http://example.com
+// @match    http://example.com/*
+// @require  https://gitcdn.xyz/Brandon-Beck/Userscripts/604449d00e316a699e1cd63d54b8b14f824dbb91/common.js
+// @require  https://gitcdn.xyz/Brandon-Beck/Userscripts/e9750f7ddfc0a4717207be2112114a57bb76b00c/uncommon.js
+// @author   Brandon Beck
+// @license  GPL
+// ==/UserScript==
+
 /* global throwMissingParam getUserValue setUserValue */
 /* eslint no-unused-vars: ["off"] */
 /* eslint no-return-assign: ["off"] */
 
 'use strict'
+
+
+const dbg = console.log // eslint-disable-line no-console
+
 
 /**
     @class SettingsTree
@@ -37,12 +60,11 @@
 function SettingsTree({
   key = throwMissingParam('new SettingsTree' ,'key' ,'\'a unique key to access this SettingsTree from its container\'')
   ,corrector
-  ,onchange = () => null
-  ,updateUiCallback = () => null
   ,defer
   ,autosave
   ,autosaveDelay
   ,defaultValue
+  ,initialValue
   ,saveLocation
   ,saveMethod
   ,loadMethod
@@ -51,12 +73,15 @@ function SettingsTree({
   const stree = this
   if (!(stree instanceof SettingsTree)) {
     // Your getting an instance wether you like it or not!
-    return new SettingsTree(...arguments)
+    return new SettingsTree(...arguments) // eslint-disable-line prefer-rest-params
   }
   // Expose tvariables we should be capable of directly altering later
   // stree.key=key;
   stree.autosave = autosave
   stree.autosaveDelay = autosaveDelay
+
+  let nextID = 0
+  const createID = () => (nextID++).toString()
 
   function defaultLoadMethod() {
     // FIXME: Autoload has a few small issues.
@@ -92,13 +117,17 @@ function SettingsTree({
     ,autosaveTimeout: undefined
     ,saveMethod
     ,loadMethod
-    ,value: isLeaf ? defaultValue : {}
+    ,value: isLeaf ? initialValue : {}
+    ,callbacks: {}
   }
   const privateMethods = {}
 
   Object.defineProperties(privateMethods ,{
     value: {
       get() {
+        if (privateObject.value === undefined) {
+          return defaultValue
+        }
         return privateObject.value
       }
       ,set(val) {
@@ -107,6 +136,7 @@ function SettingsTree({
       }
     }
   })
+  // Our methods. Methods shared with our children, but not exposed publicly.
   const ourMethods = {}
   function getOrDefer(undeferedObject ,deferKey ,fallback) {
     if (undeferedObject[deferKey] != null) {
@@ -171,7 +201,7 @@ function SettingsTree({
           return privateObject.autosaveTimeout = val
         }
         if (typeof defer === 'object') {
-          return defer.autosaveTimeout = val
+          return defer.autosaveTimeout = val // eslint-disable-line no-param-reassign
         }
         // There is no save method. One will be generated in this root
         // context, so use ours.
@@ -247,44 +277,17 @@ function SettingsTree({
       decendentMethod()
     })
   }
-
-  // avoid duplicating code
-  function setValueCommon({ accessors ,obj ,otherCallback ,myCallback ,allowAutosave = true }) {
-    if (isLeaf) {
-      if (typeof corrector === 'function') {
-        let correctedObj
-        try {
-          correctedObj = corrector(obj)
-        }
-        catch (e) {
-          dbg(`NOTE: Corrector for <${key}> threw the error <${e.message}>! If this was unintentional, review your code!`)
-          throw e
-        }
-        if (correctedObj === obj) privateMethods.value = obj
-        else {
-          privateMethods.value = correctedObj
-          // notify the setter as well.
-          myCallback(privateMethods.value)
-        }
+  // call callback accessor is not excluded.
+  // NOTE callbacks only work on leaf values. Not recursive
+  privateMethods.callCallbacks = ({ accessor = {} }) => {
+    Object.values(privateObject.callbacks).forEach((callbackObj) => {
+      if (!(callbackObj.excludeAccessors.indexOf(accessor) >= 0)) {
+        callbackObj.callback(privateMethods.value)
       }
-      else privateMethods.value = obj
-      otherCallback(privateMethods.value)
-    }
-    else {
-      for (const childKey of Reflect.ownKeys(obj)) {
-        // TODO: Optionaly permit setting non-existant keys.
-        // Could be used to auto-build settings ui
-        // Or could be used for private/non-ui keys
-        if (typeof privateObject.children[childKey] === 'object') {
-          accessors[childKey] = obj[childKey]
-        }
-      }
-    }
-    if (allowAutosave) {
-      autosaveMethod()
-    }
+    })
   }
-  // FIXME block adding new keys to value
+
+  // Public
   Object.defineProperties(stree ,{
     children: {
       get() {
@@ -299,21 +302,6 @@ function SettingsTree({
       get() {
         return key
       }
-    }
-    ,value: {
-      get() {
-        return privateMethods.value
-      }
-      ,set(val) {
-        setValueCommon({
-          accessors: stree.value
-          ,obj: val
-          ,otherCallback: updateUiCallback
-          ,myCallback: onchange
-        })
-        return privateMethods.value
-      }
-      ,enumerable: true
     }
     // all savables, even ones that save in a diffrent location
     ,allSavable: {
@@ -353,58 +341,118 @@ function SettingsTree({
           get() { return stree.allSavable; },
         }, */
   })
-  // Similar to this.value, but for the UI.
-  // Not added to settings tree, passed directly to ui for privacy.
-  const uiAccessor = { childrenAccessors: {} }
-  Object.defineProperties(uiAccessor ,{
-    value: {
-      get() {
-        if (isLeaf) {
+  // FIXME block adding new keys to value
+
+  const createCallback = ({ callback ,excludeAccessors = [] }) => {
+    if (typeof callback !== 'function') {
+      return undefined
+    }
+    const callbackId = createID()
+    privateObject.callbacks[callbackId] = {
+      callback ,excludeAccessors
+    }
+    return callbackId
+  }
+  stree.removeCallback = ({ callbackId }) => {
+    delete privateObject.callbacks[callbackId]
+  }
+  stree.createAccessor = ({ callback ,excludeAccessors = [] } = {}) => {
+    const newAccessor = {}
+    createCallback({
+      callback ,excludeAccessors: [...excludeAccessors ,newAccessor]
+    })
+    Object.defineProperties(newAccessor ,{
+      value: {
+        get() {
+          if (isLeaf) {
+            return privateMethods.value
+          }
+          const lockedObj = {}
+          const desc = Object.getOwnPropertyDescriptors(privateMethods.value)
+          Object.defineProperties(lockedObj ,desc)
+          Object.freeze(lockedObj)
+          return lockedObj
+          // return privateMethods.value
+        }
+        ,set(newVal) {
+          // FIXME do not allow non-leaf set
+          if (isLeaf) {
+            if (typeof corrector === 'function') {
+              let correctedVal
+              try {
+                correctedVal = corrector(newVal)
+              }
+              catch (e) {
+                dbg(`NOTE: Corrector for <${key}> threw the error <${e.message}>! If this was unintentional, review your code!`)
+                throw e
+              }
+              privateMethods.value = correctedVal
+              if (correctedVal !== newVal) {
+                // notify the setter as well.
+                privateMethods.callCallbacks({ accessor: {} })
+              }
+            }
+            else privateMethods.value = newVal
+            privateMethods.callCallbacks({ accessor: newAccessor })
+            autosaveMethod()
+            return privateMethods.value
+          }
+          for (const childKey of Reflect.ownKeys(newVal)) {
+            // TODO: Optionaly permit setting non-existant keys.
+            // Could be used to auto-build settings ui
+            // Or could be used for private/non-ui keys
+            if (typeof privateObject.children[childKey] === 'object') {
+              privateMethods.value[childKey] = newVal[childKey]
+            }
+          }
           return privateMethods.value
         }
+        ,enumerable: true
+      }
+    })
+    Object.seal(newAccessor)
+    return newAccessor
+  }
 
-        return uiAccessor.childrenAccessors
-      }
-      ,set(val) {
-        setValueCommon({
-          accessors: uiAccessor.childrenAccessors
-          ,obj: val
-          ,otherCallback: onchange
-          ,myCallback: updateUiCallback
-        })
-        return privateMethods.value
-      }
-    }
-  })
-  stree.updateUiCallback = updateUiCallback
   if (!isLeaf) {
-    function attachChildToTree(childTree ,childUiAccessor) {
-      privateObject.children[childTree.key] = childTree
-      const desc = Reflect.getOwnPropertyDescriptor(childTree ,'value')
-      Object.defineProperty(stree.value ,childTree.key ,desc)
-      const uiDesc = Reflect.getOwnPropertyDescriptor(childUiAccessor ,'value')
-      Object.defineProperty(uiAccessor.value ,childTree.key ,uiDesc)
-      return [childTree ,childUiAccessor]
-    }
-    stree.createBranch = (args) => {
-      const [childTree ,childUiAccessor] = new SettingsTree({
-        defer: ourMethods
-        ,...args
-      })
-      return attachChildToTree(childTree ,childUiAccessor)
-    }
-    stree.createLeaf = (args) => {
-      const [childTree ,childUiAccessor] = new SettingsTree({
+    function createChild(args ,{ isLeaf: childIsLeaf }) {
+      const childTree = new SettingsTree({
         // Defaults
         defer: ourMethods
         ,...args
         // Overrides
-        ,isLeaf: true
+        ,isLeaf: childIsLeaf
       })
-      return attachChildToTree(childTree ,childUiAccessor)
+      privateObject.children[childTree.key] = childTree
+      const childAccessor = childTree.createAccessor()
+      const desc = Reflect.getOwnPropertyDescriptor(childAccessor ,'value')
+      Object.defineProperty(privateMethods.value ,childTree.key ,desc)
+      return childTree
     }
+    stree.createBranch = args => createChild(args ,{ isLeaf: false })
+    stree.createLeaf = args => createChild(args ,{ isLeaf: true })
   }
   Object.seal(stree)
-  Object.seal(uiAccessor)
-  return [stree ,uiAccessor]
+  return stree
 }
+
+function example() {
+  const st = new SettingsTree({ key: 'Root' })
+  const autokillSt = st.createBranch({ key: 'autokill' })
+  const accessor = st.createAccessor()
+  autokillSt.createLeaf({
+    key: 'chickens' ,defaultValue: 5
+  })
+  autokillSt.createLeaf({
+    key: 'people' ,defaultValue: 5
+  })
+  autokillSt.createLeaf({ key: 'zombies' })
+  accessor.value.autokill.chickens = 4
+  accessor.value.autokill.chickens
+  accessor.allSavable
+  unsafeWindow.SettingsTree = SettingsTree
+  unsafeWindow.st = st
+  unsafeWindow.accessor = accessor
+}
+
+//example()
